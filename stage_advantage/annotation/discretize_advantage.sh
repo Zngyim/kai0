@@ -10,7 +10,7 @@ set -o pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ─── Source dataset path (modify this to your dataset) ────────────────────────
-DATA_PATH="Path/to/your/dataset"
+DATA_PATH="/mnt/bos/shared-dataset/zhangjiyao/zimu/data-kai0/Task_A/advantage"
 
 # ─── Output base directory ────────────────────────────────────────────────────
 base_name=$(basename "$DATA_PATH")
@@ -62,7 +62,7 @@ prepare_and_label() {
 prepare_and_label "data_PI06_100000" "${base_name}_PI06_binary" ""
 
 # KAI0: two-stage, stage-level labeling
-prepare_and_label "data_KAI0_100000" "${base_name}_KAI0_abs_binary" "--stage-nums 2"
+prepare_and_label "data_KAI0_25000" "${base_name}_KAI0_abs_binary" "--stage-nums 2"
 
 echo "============================================================"
 echo "  All datasets labeled successfully!"

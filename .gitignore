@@ -203,6 +203,20 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
+# Local datasets and generated experiment outputs
+/auged_data/
+/data_forsa/
+/testdata/
+/test_data_sa_overlay_01/
+/wandb/
+/eval_causal_ood_0722*/
+/eval_overlay_output*/
+/eval_viz*/
+/label_gt/
+/diff50_curve.png
+/ep0.png
+/ep1.png
+
 # Marimo
 marimo/_static/
 marimo/_lsp/

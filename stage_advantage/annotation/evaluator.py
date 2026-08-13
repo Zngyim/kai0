@@ -28,7 +28,7 @@ from queue import Queue
 
 from openpi.training import config as _config
 from openpi.shared import download
-from openpi.models_pytorch.pi0_pytorch import PI0Pytorch_Custom as PI0Pytorch
+from openpi.models_pytorch.pi0_pytorch import AdvantageEstimator as PI0Pytorch
 import openpi.models.tokenizer as _tokenizer
 from types import SimpleNamespace
 from openpi.shared import image_tools

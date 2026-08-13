@@ -93,6 +93,9 @@ class DataConfig:
     # If true, will use the LeRobot dataset task to define the prompt.
     prompt_from_task: bool = False
 
+    # Optional list of episode indices to filter the dataset.
+    episodes: list[int] | None = None
+
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
     # Action space for DROID dataset.
@@ -689,7 +692,7 @@ class TrainConfig:
     # Base directory for config assets (e.g., norm stats).
     assets_base_dir: str = "./assets"
     # Base directory for checkpoints.
-    checkpoint_base_dir: str = "./checkpoints"
+    checkpoint_base_dir: str = "/mnt/pfs/zhangjiyao/yiming/checkpoints"
 
     # Random seed that will be used by random generators during training.
     seed: int = 42
@@ -1218,7 +1221,7 @@ _CONFIGS = [
 
     #************************Advantage Estimator***************************
     TrainConfig(
-        name="ADVANTAGE_TORCH_KAI0_FLATTEN_FOLD",
+        name="STACK_BLOCKS_ADVANTAGE",
         advantage_estimator=True,
         model=pi0_config.AdvantageEstimatorConfig(
             pi05=True,
@@ -1227,12 +1230,12 @@ _CONFIGS = [
             discrete_state_input=False,
         ),
         data=LerobotAgilexDataConfig(
-            repo_id = "Path/to/your/advantage/dataset",
+            repo_id = "/mnt/pfs/zhangjiyao/yiming/kai0/data_forsa/data_02",
             assets=AssetsConfig(
-                assets_dir="Path/to/your/advantage/dataset/assets",
-                asset_id="Your_advantage_dataset_name",
+                assets_dir="",
+                asset_id="StackBlocks",
             ),
-            default_prompt="Flatten and fold the cloth.",
+            default_prompt="Stack three blocks.",
             # * why removing "prompt" here will lead to an error in transforms.py
             repack_transforms=_transforms.Group(
                 inputs=[
@@ -1252,7 +1255,7 @@ _CONFIGS = [
                         "episode_length": "episode_length",
                         "frame_index": "frame_index",
                         "episode_index": "episode_index",
-                        "progress_gt": "progress_gt",
+                        "progress_gt": "stage_progress_gt",
                         "stage_progress_gt": "stage_progress_gt",
                         "progress": "progress",
                         # "is_suboptimal": "is_suboptimal",
@@ -1261,13 +1264,15 @@ _CONFIGS = [
             ]
             )
         ),
-        pytorch_weight_path="Path/to/your/pi05_base/checkpoint",
-        num_train_steps=100_000,
+        pytorch_weight_path="/mnt/pfs/zhangjiyao/yiming/kai0/checkpoints/pi05_base",
+        num_train_steps=50_000,
         keep_period=10000,
-        save_interval=10000,
+        save_interval=5000,
+        # num_workers = 2, # toy
         num_workers=8,
-        batch_size=16,  # * 1 gpus
-        # batch_size=128, # * 8 gpus
+        # batch_size = 8, # toy example
+        # batch_size=128,  # * 4 gpus
+        batch_size=256, # * 8 gpus
         skip_norm_stats=True,           # *  No norm stats used.
     ),
     TrainConfig(

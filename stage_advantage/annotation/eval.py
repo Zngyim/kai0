@@ -56,8 +56,8 @@ MODELS_CONFIG_MAP = {
         'KAI0': {
             'name': 'KAI0',
             'config_name': 'ADVANTAGE_TORCH_KAI0_FLATTEN_FOLD',
-            'ckpt_dir': 'experiment/ADVANTAGE_TORCH_KAI0_FLATTEN_FOLD/run1',
-            'ckpt_steps': 100000
+            'ckpt_dir': '/mnt/bos/shared-dataset/zhangjiyao/zimu/checkpoints/ADVANTAGE_TORCH_KAI0_FLATTEN_FOLD/run1-8gpus',
+            'ckpt_steps': 25000
         },
     },
     'demo_A': {
@@ -70,8 +70,8 @@ MODELS_CONFIG_MAP = {
         'KAI0': {
             'name': 'KAI0',
             'config_name': 'ADVANTAGE_TORCH_KAI0_FLATTEN_FOLD',
-            'ckpt_dir': 'experiment/ADVANTAGE_TORCH_KAI0_FLATTEN_FOLD/run1',
-            'ckpt_steps': 100000
+            'ckpt_dir': '/mnt/bos/shared-dataset/zhangjiyao/zimu/checkpoints/ADVANTAGE_TORCH_KAI0_FLATTEN_FOLD/run1-8gpus',
+            'ckpt_steps': 25000
         },
     },
     'demo_B': {
@@ -84,8 +84,8 @@ MODELS_CONFIG_MAP = {
         'KAI0': {
             'name': 'KAI0',
             'config_name': 'ADVANTAGE_TORCH_KAI0_FLATTEN_FOLD',
-            'ckpt_dir': 'experiment/ADVANTAGE_TORCH_KAI0_FLATTEN_FOLD/run1',
-            'ckpt_steps': 100000
+            'ckpt_dir': '/mnt/bos/shared-dataset/zhangjiyao/zimu/checkpoints/ADVANTAGE_TORCH_KAI0_FLATTEN_FOLD/run1-8gpus',
+            'ckpt_steps': 25000
         },
     },
 }
@@ -168,13 +168,13 @@ def main():
 
             # Resolve video paths for all three camera views
             top_video = repo_id / dataset_metadata.video_path.format(
-                episode_chunk=i // dataset_metadata.chunks_size, episode_index=i, video_key='top_head'
+                episode_chunk=i // dataset_metadata.chunks_size, episode_index=i, video_key='observation.images.top_head'
             )
             left_video = repo_id / dataset_metadata.video_path.format(
-                episode_chunk=i // dataset_metadata.chunks_size, episode_index=i, video_key='hand_left'
+                episode_chunk=i // dataset_metadata.chunks_size, episode_index=i, video_key='observation.images.hand_left'
             )
             right_video = repo_id / dataset_metadata.video_path.format(
-                episode_chunk=i // dataset_metadata.chunks_size, episode_index=i, video_key='hand_right'
+                episode_chunk=i // dataset_metadata.chunks_size, episode_index=i, video_key='observation.images.hand_right'
             )
             if not top_video.exists() or not left_video.exists() or not right_video.exists():
                 print(f"Missing video file(s) for episode {i}, skipping")

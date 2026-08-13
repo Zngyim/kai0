@@ -15,7 +15,7 @@ This script:
    - task_index=0 to (n-1) based on advantage percentiles (higher advantage -> higher task_index)
    - Each slice contains ~(100/n)% of frames
 
-Stage-based mode (--stage-nums > 1):
+   Stage-based mode (--stage-nums > 1):
    - Each frame is assigned to a stage based on its stage_progress_gt value
    - Frames with stage_progress_gt in [i/stage_nums, (i+1)/stage_nums) belong to stage i
    - Each stage has its own advantage statistics and percentile boundaries
