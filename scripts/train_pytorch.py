@@ -124,7 +124,9 @@ def set_seed(seed: int, local_rank: int):
 
 def build_datasets(config: _config.TrainConfig):
     # Use the unified data loader with PyTorch framework
-    data_loader = _data.create_data_loader(config, framework="pytorch", shuffle=True, skip_norm_stats=config.skip_norm_stats)
+    data_loader = _data.create_data_loader(
+        config, framework="pytorch", shuffle=True, skip_norm_stats=config.skip_norm_stats
+    )
     return data_loader, data_loader.data_config()
 
 
@@ -144,6 +146,22 @@ def get_model_parameters(model):
         if isinstance(model, torch.nn.parallel.DistributedDataParallel)
         else model.parameters()
     )
+
+
+def prune_old_checkpoints(checkpoint_dir, latest_step: int, keep_period: int | None):
+    """Keep the latest checkpoint plus periodic milestones, matching the JAX checkpoint policy."""
+    checkpoint_steps = sorted(
+        int(path.name) for path in checkpoint_dir.iterdir() if path.is_dir() and path.name.isdigit()
+    )
+    keep_steps = {latest_step}
+    if keep_period is not None:
+        keep_steps.update(step for step in checkpoint_steps if step % keep_period == 0)
+
+    for step in checkpoint_steps:
+        if step not in keep_steps:
+            checkpoint_path = checkpoint_dir / str(step)
+            shutil.rmtree(checkpoint_path)
+            logging.info(f"Removed old checkpoint at step {step} -> {checkpoint_path}")
 
 
 def save_checkpoint(model, optimizer, global_step, config, is_main, data_config):
@@ -188,6 +206,7 @@ def save_checkpoint(model, optimizer, global_step, config, is_main, data_config)
         tmp_ckpt_dir.rename(final_ckpt_dir)
 
         logging.info(f"Saved checkpoint at step {global_step} -> {final_ckpt_dir}")
+        prune_old_checkpoints(config.checkpoint_dir, global_step, config.keep_period)
 
         # Log checkpoint to wandb
         if config.wandb_enabled:
@@ -360,13 +379,17 @@ def train_loop(config: _config.TrainConfig):
 
     # AdvantageEstimator vs policy: same script, branch on config (data_loader already uses advantage dataset when True)
     if config.advantage_estimator:
-        assert isinstance(config.model, openpi.models.pi0_config.AdvantageEstimatorConfig), "config.model must be an instance of openpi.models.pi0_config.AdvantageEstimatorConfig when config.advantage_estimator=True"
+        assert isinstance(config.model, openpi.models.pi0_config.AdvantageEstimatorConfig), (
+            "config.model must be an instance of openpi.models.pi0_config.AdvantageEstimatorConfig when config.advantage_estimator=True"
+        )
         logging.info("Training mode: AdvantageEstimator (value/progress)")
 
     # Log sample images to wandb on first batch
     if is_main and config.wandb_enabled and not resuming:
         # Create a separate data loader for sample batch to avoid consuming the main loader
-        sample_data_loader = _data.create_data_loader(config, framework="pytorch", shuffle=False, skip_norm_stats=config.skip_norm_stats)
+        sample_data_loader = _data.create_data_loader(
+            config, framework="pytorch", shuffle=False, skip_norm_stats=config.skip_norm_stats
+        )
         sample_batch = next(iter(sample_data_loader))
         # Convert observation and actions to torch tensors
         observation, actions = sample_batch
@@ -451,10 +474,10 @@ def train_loop(config: _config.TrainConfig):
         logging.info(f"Loading weights from: {config.pytorch_weight_path}")
 
         model_path = os.path.join(config.pytorch_weight_path, "model.safetensors")
-        # Set strict=False when training advantage estimator, 
+        # Set strict=False when training advantage estimator,
         safetensors.torch.load_model(
-            (model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model), 
-            model_path, 
+            (model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model),
+            model_path,
             strict=(not config.advantage_estimator),
         )
         logging.info(f"Loaded PyTorch weights from {config.pytorch_weight_path}")
@@ -537,7 +560,11 @@ def train_loop(config: _config.TrainConfig):
                 pg["lr"] = lr_schedule(global_step)
 
             # Forward pass
-            losses = model(observation, actions)
+            loss_aux_dict = {}
+            if config.advantage_estimator:
+                losses, loss_aux_dict = model(observation, actions, return_loss_dict=True)
+            else:
+                losses = model(observation, actions)
             # Ensure losses is a tensor and handle different return types
             if isinstance(losses, list | tuple):
                 losses = torch.stack(losses)
@@ -568,13 +595,18 @@ def train_loop(config: _config.TrainConfig):
 
             # Collect stats
             if is_main:
-                infos.append(
+                info = {
+                    "loss": loss.item(),
+                    "learning_rate": optim.param_groups[0]["lr"],
+                    "grad_norm": float(grad_norm) if isinstance(grad_norm, torch.Tensor) else grad_norm,
+                }
+                info.update(
                     {
-                        "loss": loss.item(),
-                        "learning_rate": optim.param_groups[0]["lr"],
-                        "grad_norm": float(grad_norm) if isinstance(grad_norm, torch.Tensor) else grad_norm,
+                        key: float(value.detach().cpu()) if isinstance(value, torch.Tensor) else float(value)
+                        for key, value in loss_aux_dict.items()
                     }
                 )
+                infos.append(info)
 
             if is_main and (global_step % config.log_interval == 0):
                 elapsed = time.time() - start_time
@@ -590,10 +622,16 @@ def train_loop(config: _config.TrainConfig):
                     ]
                     if len(vals) > 0:
                         avg_grad_norm = sum(vals) / len(vals)
+                avg_loss_value = None
+                if any("loss_value" in info for info in infos):
+                    avg_loss_value = sum(info["loss_value"] for info in infos if "loss_value" in info) / sum(
+                        "loss_value" in info for info in infos
+                    )
+                loss_value_text = f" loss_value={avg_loss_value:.4f}" if avg_loss_value is not None else ""
+                grad_norm_text = f" grad_norm={avg_grad_norm:.2f}" if avg_grad_norm is not None else ""
                 logging.info(
-                    f"step={global_step} loss={avg_loss:.4f} lr={avg_lr:.2e} grad_norm={avg_grad_norm:.2f} time={elapsed:.1f}s"
-                    if avg_grad_norm is not None
-                    else f"step={global_step} loss={avg_loss:.4f} lr={avg_lr:.2e} time={elapsed:.1f}s"
+                    f"step={global_step} loss={avg_loss:.4f}{loss_value_text} lr={avg_lr:.2e}"
+                    f"{grad_norm_text} time={elapsed:.1f}s"
                 )
 
                 # Log to wandb
@@ -606,6 +644,8 @@ def train_loop(config: _config.TrainConfig):
                     }
                     if avg_grad_norm is not None:
                         log_payload["grad_norm"] = avg_grad_norm
+                    if avg_loss_value is not None:
+                        log_payload["loss_value"] = avg_loss_value
                     wandb.log(log_payload, step=global_step)
 
                 start_time = time.time()

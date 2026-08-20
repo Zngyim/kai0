@@ -480,41 +480,63 @@ class AdvantageEstimator(PI0Pytorch):
         mlp_layers.append(nn.Tanh())
         self.value_head = nn.Sequential(*mlp_layers)
 
-
     def _preprocess_observation(self, observation, *, train=True, return_full_obs=False):
         """Helper method to preprocess observation."""
-        observation = _preprocessing.preprocess_observation_pytorch_custom(observation, train=train, return_full_obs=return_full_obs,
-                                                                    apply_aug=False)  # Not applying aug for policy and reward model training.
+        observation = _preprocessing.preprocess_observation_pytorch_custom(
+            observation, train=train, return_full_obs=return_full_obs, apply_aug=False
+        )  # Not applying aug for policy and reward model training.
 
         full_obs = (
-                list(observation.images.values()),
-                list(observation.image_masks.values()),
-                observation.tokenized_prompt,
-                observation.tokenized_prompt_mask,
-                observation.state,
-                observation, # Pass the whole observation object for value target calculation
-            )
+            list(observation.images.values()),
+            list(observation.image_masks.values()),
+            observation.tokenized_prompt,
+            observation.tokenized_prompt_mask,
+            observation.state,
+            observation,  # Pass the whole observation object for value target calculation
+        )
         return full_obs if return_full_obs else full_obs[:-1]
 
-    def forward(self, observation, actions, noise=None, time=None, return_loss_dict=False) -> tuple[Tensor, dict]:
+    def forward(
+        self, observation, actions=None, noise=None, time=None, *, return_loss_dict=False
+    ) -> tuple[Tensor, dict]:
         """Do a full training forward pass and compute the loss (batch_size x num_steps x num_motors)"""
 
-        images, img_masks, lang_tokens, lang_masks, state, obs_full = self._preprocess_observation(observation, train=self.training, return_full_obs=True)
+        images, img_masks, lang_tokens, lang_masks, state, obs_full = self._preprocess_observation(
+            observation, train=self.training, return_full_obs=True
+        )
 
-        if noise is None:
-            noise = self.sample_noise(actions.shape, actions.device)
+        action_free = self.loss_action_weight == 0.0
+        if action_free:
+            # Value-only advantage estimation must not depend on demonstration actions.
+            # Keep a deterministic suffix query so the pi0 action expert can still
+            # aggregate the visual-language prefix for the value head.
+            batch_size = state.shape[0]
+            x_t = torch.zeros(
+                (batch_size, self.config.action_horizon, self.config.action_dim),
+                dtype=torch.float32,
+                device=state.device,
+            )
+            time = torch.ones(batch_size, dtype=torch.float32, device=state.device)
+            u_t = None
+        else:
+            if actions is None:
+                raise ValueError("actions must be provided when loss_action_weight is non-zero")
+            if noise is None:
+                noise = self.sample_noise(actions.shape, actions.device)
+            if time is None:
+                time = self.sample_time(actions.shape[0], actions.device)
 
-        if time is None:
-            time = self.sample_time(actions.shape[0], actions.device)
+            time_expanded = time[:, None, None]
+            x_t = time_expanded * noise + (1 - time_expanded) * actions
+            u_t = noise - actions
 
-        time_expanded = time[:, None, None]
-        
-        x_t = time_expanded * noise + (1 - time_expanded) * actions
-        u_t = noise - actions
+        prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
+            images,
+            img_masks,
+            lang_tokens,
+            lang_masks,
+        )  # * custom
 
-
-        prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, lang_tokens, lang_masks,)  # * custom
-        
         suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(state, x_t, time)
         if (
             self.paligemma_with_expert.paligemma.language_model.layers[0].self_attn.q_proj.weight.dtype
@@ -544,47 +566,45 @@ class AdvantageEstimator(PI0Pytorch):
             )
             return suffix_out
 
-
         suffix_out_full = self._apply_checkpoint(
             forward_func, prefix_embs, suffix_embs, att_2d_masks_4d, position_ids, adarms_cond
         )
 
-        suffix_out_actions = suffix_out_full[:, -self.config.action_horizon :]
-        suffix_out_actions = suffix_out_actions.to(dtype=torch.float32)
-
-        # Apply gradient checkpointing to final action projection if enabled
-        def action_out_proj_func(suffix_out):
-            return self.action_out_proj(suffix_out)
-
-        v_t = self._apply_checkpoint(action_out_proj_func, suffix_out_actions)
-
         # --- Start of Modifications ---
-
-        # Calculate action loss, taking the mean over the action dimension to match JAX implementation
-        loss_action = F.mse_loss(u_t, v_t, reduction="none").mean(dim=-1) # Shape: (B, AH)
-        loss = loss_action * self.loss_action_weight
 
         loss_aux_dict = {}
 
+        if action_free:
+            loss_action = torch.zeros((), dtype=torch.float32, device=state.device)
+        else:
+            suffix_out_actions = suffix_out_full[:, -self.config.action_horizon :].to(dtype=torch.float32)
+
+            # Apply gradient checkpointing to final action projection if enabled
+            def action_out_proj_func(suffix_out):
+                return self.action_out_proj(suffix_out)
+
+            v_t = self._apply_checkpoint(action_out_proj_func, suffix_out_actions)
+            loss_action = F.mse_loss(u_t, v_t, reduction="none").mean(dim=-1)
+
         # * Custom: value head
-        # Get the state token's final representation
+        # Use the first deterministic suffix query token as the pooled representation.
         deep_rep = suffix_out_full[:, 0, :].to(dtype=torch.float32)
-        value_pred = self.value_head(deep_rep) # Shape: (B, 1)
+        value_pred = self.value_head(deep_rep)  # Shape: (B, 1)
         # custom: timestep_difference_mode:
         progress_tgt = torch.clamp(obs_full.progress.float(), -1.0, 1.0)
-        
-        progress_tgt = progress_tgt.unsqueeze(1) # Shape: (B, 1)
+
+        progress_tgt = progress_tgt.unsqueeze(1)  # Shape: (B, 1)
 
         value_loss = F.mse_loss(value_pred, progress_tgt, reduction="none")
-        
-        # Weight the value loss
-        value_loss = value_loss.to(loss.dtype) * self.loss_value_weight
+
+        # Weight the value loss.
+        value_loss = value_loss * self.loss_value_weight
+
+        loss = value_loss if action_free else loss_action * self.loss_action_weight + value_loss
 
         # Populate auxiliary dictionary for logging
         loss_aux_dict["loss_action"] = loss_action.detach().mean()
         loss_aux_dict["loss_value"] = value_loss.detach().mean()
-
-        loss = loss + value_loss
 
         if return_loss_dict:
             return loss, loss_aux_dict
@@ -600,24 +620,22 @@ class AdvantageEstimator(PI0Pytorch):
 
         bsize = state.shape[0]
         actions_shape = (bsize, self.config.action_horizon, self.config.action_dim)
-        
-        # We need a dummy action and time for the suffix embedding, similar to the training forward pass
-        noise_action = self.sample_noise(actions_shape, device)
-        time = self.sample_time(bsize, device)
 
-        # ! Not using action advantage for value learning and prediction.
+        # Match value-only training exactly: a fixed suffix query with no action information.
+        query_action = torch.zeros(actions_shape, dtype=torch.float32, device=device)
+        time = torch.ones(bsize, dtype=torch.float32, device=device)
 
-        # Embed prefix (images, language) and suffix (state, noisy actions, time)
+        # Embed prefix (images, language) and the deterministic suffix query.
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
-        suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(state, noise_action, time)
-        
+        suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(state, query_action, time)
+
         if (
             self.paligemma_with_expert.paligemma.language_model.layers[0].self_attn.q_proj.weight.dtype
             == torch.bfloat16
         ):
             suffix_embs = suffix_embs.to(dtype=torch.bfloat16)
             prefix_embs = prefix_embs.to(dtype=torch.bfloat16)
-        
+
         pad_masks = torch.cat([prefix_pad_masks, suffix_pad_masks], dim=1)
         att_masks = torch.cat([prefix_att_masks, suffix_att_masks], dim=1)
 
@@ -639,6 +657,4 @@ class AdvantageEstimator(PI0Pytorch):
         # Extract the state token representation and predict the value
         deep_rep = suffix_out[:, 0, :].to(dtype=torch.float32)
 
-        value_pred = self.value_head(deep_rep)
-            
-        return value_pred
+        return self.value_head(deep_rep)

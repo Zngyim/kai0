@@ -209,6 +209,11 @@ cython_debug/
 /testdata/
 /test_data_sa_overlay_01/
 /wandb/
+/hf_home/
+/hf_datasets/
+/cache/
+/torch_home/
+/runtime_tmp/
 /eval_causal_ood_0722*/
 /eval_overlay_output*/
 /eval_viz*/

@@ -17,9 +17,12 @@ import openpi.models.model as _model
 import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
+import openpi.policies.agilex_policy as agilex_policy
 import openpi.policies.aloha_policy as aloha_policy
+import openpi.policies.arx_policy as arx_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
+import openpi.policies.umi_policy as umi_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
@@ -28,9 +31,6 @@ import openpi.training.misc.roboarena_config as roboarena_config
 import openpi.training.optimizer as _optimizer
 import openpi.training.weight_loaders as weight_loaders
 import openpi.transforms as _transforms
-
-import openpi.policies.agilex_policy as agilex_policy
-import openpi.policies.arx_policy as arx_policy
 
 ModelType: TypeAlias = _model.ModelType
 # Work around a tyro issue with using nnx.filterlib.Filter directly.
@@ -360,6 +360,7 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
             model_transforms=model_transforms,
         )
 
+
 @dataclasses.dataclass(frozen=True)
 class LerobotAgilexDataConfig(DataConfigFactory):
     """
@@ -405,7 +406,6 @@ class LerobotAgilexDataConfig(DataConfigFactory):
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
-
         # Use local variables instead of modifying frozen self
         default_prompt = self.default_prompt
         repack_transforms = self.repack_transforms
@@ -416,9 +416,7 @@ class LerobotAgilexDataConfig(DataConfigFactory):
             original_repack = self.repack_transforms.inputs[0]
             new_structure = dict(original_repack.structure)
             new_structure["prompt"] = "prompt"
-            repack_transforms = _transforms.Group(
-                inputs=[_transforms.RepackTransform(new_structure)]
-            )
+            repack_transforms = _transforms.Group(inputs=[_transforms.RepackTransform(new_structure)])
 
         # Create data transforms for inputs and outputs
         data_transforms = _transforms.Group(
@@ -444,7 +442,7 @@ class LerobotAgilexDataConfig(DataConfigFactory):
             )
 
         # Create model transforms
-        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+        model_transforms = ModelTransformFactory(default_prompt=default_prompt)(model_config)
 
         return dataclasses.replace(
             self.create_base_config(assets_dirs, model_config),
@@ -454,6 +452,7 @@ class LerobotAgilexDataConfig(DataConfigFactory):
             action_sequence_keys=self.action_sequence_keys,
             episodes=self.episodes,
         )
+
 
 @dataclasses.dataclass(frozen=True)
 class LerobotARXDataConfig(DataConfigFactory):
@@ -500,7 +499,6 @@ class LerobotARXDataConfig(DataConfigFactory):
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
-
         # Use local variables instead of modifying frozen self
         default_prompt = self.default_prompt
         repack_transforms = self.repack_transforms
@@ -511,9 +509,7 @@ class LerobotARXDataConfig(DataConfigFactory):
             original_repack = self.repack_transforms.inputs[0]
             new_structure = dict(original_repack.structure)
             new_structure["prompt"] = "prompt"
-            repack_transforms = _transforms.Group(
-                inputs=[_transforms.RepackTransform(new_structure)]
-            )
+            repack_transforms = _transforms.Group(inputs=[_transforms.RepackTransform(new_structure)])
 
         # Create data transforms for inputs and outputs
         data_transforms = _transforms.Group(
@@ -538,7 +534,7 @@ class LerobotARXDataConfig(DataConfigFactory):
             )
 
         # Create model transforms
-        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+        model_transforms = ModelTransformFactory(default_prompt=default_prompt)(model_config)
 
         return dataclasses.replace(
             self.create_base_config(assets_dirs, model_config),
@@ -548,6 +544,49 @@ class LerobotARXDataConfig(DataConfigFactory):
             action_sequence_keys=self.action_sequence_keys,
             episodes=self.episodes,
         )
+
+
+@dataclasses.dataclass(frozen=True)
+class LerobotUMIDataConfig(DataConfigFactory):
+    """Data configuration for single-arm Franka UMI LeRobot datasets."""
+
+    default_prompt: str | None = None
+    mask_state: bool = True
+    episodes: list[int] | None = None
+    repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(
+        default=_transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "images": {
+                            "front": "extra_view_image",
+                            "left_wrist": "image",
+                        },
+                        "state": "state",
+                        "actions": "actions",
+                    }
+                )
+            ]
+        )
+    )
+    action_sequence_keys: Sequence[str] = ("actions",)
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        data_transforms = _transforms.Group(
+            inputs=[umi_policy.UMIInputs(mask_state=self.mask_state)],
+            outputs=[umi_policy.UMIOutputs()],
+        )
+        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=self.repack_transforms,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=self.action_sequence_keys,
+            episodes=self.episodes,
+        )
+
 
 @dataclasses.dataclass(frozen=True)
 class RLDSDroidDataConfig(DataConfigFactory):
@@ -708,16 +747,16 @@ class TrainConfig:
     log_interval: int = 100
     # How often (in steps) to save checkpoints.
     save_interval: int = 1000
-    
-#************************advantage estimator***************************
+
+    # ************************advantage estimator***************************
     advantage_estimator: bool = False
     is_train: bool = True  # * Only use partial data in training
     # split:    str  = None  # one of ['train_tasks', 'val_tasks', 'heldout_tasks']
     # * Bugfix, only use train_tasks for training
-    split: str = 'all'  # * Only use training tasks for training, choose from ['train', 'val', 'all']
+    split: str = "all"  # * Only use training tasks for training, choose from ['train', 'val', 'all']
     drop_last: bool = True  # If true, will drop the last incomplete batch.
     skip_norm_stats: bool = False
-#************************advantage estimator***************************
+    # ************************advantage estimator***************************
     # If set, any existing checkpoints matching step % keep_period == 0 will not be deleted.
     keep_period: int | None = 5000
 
@@ -1169,17 +1208,13 @@ _CONFIGS = [
         exp_name="debug_pi05",
         wandb_enabled=False,
     ),
-
-
-
-
     # ----------------------- Normal π₀.5 full fine-tuning (see README § Preparation) -----------------------
     # Set repo_id to absolute path to ./data/<Task>/base and weight_loader to π₀.5 base checkpoint.
     # Then: compute_norm_states_fast.py --config-name <name>; train.py <name> --exp_name=<xxx>
     TrainConfig(
         name="pi05_flatten_fold_normal",
         model=pi0_config.Pi0Config(pi05=True),
-        data = LerobotAgilexDataConfig(
+        data=LerobotAgilexDataConfig(
             repo_id="<path_to_repo_root>/data/FlattenFold/base",
             default_prompt="Flatten and fold the cloth.",
             use_delta_joint_actions=False,
@@ -1193,7 +1228,7 @@ _CONFIGS = [
     TrainConfig(
         name="pi05_tee_shirt_sort_normal",
         model=pi0_config.Pi0Config(pi05=True),
-        data = LerobotAgilexDataConfig(
+        data=LerobotAgilexDataConfig(
             repo_id="<path_to_repo_root>/data/TeeShirtSort/base",
             default_prompt="Fetch the clothes, fold the tee shirts and hand-over the collared shirts.",
             use_delta_joint_actions=False,
@@ -1207,7 +1242,7 @@ _CONFIGS = [
     TrainConfig(
         name="pi05_hang_cloth_normal",
         model=pi0_config.Pi0Config(pi05=True),
-        data = LerobotARXDataConfig(
+        data=LerobotARXDataConfig(
             repo_id="<path_to_repo_root>/data/HangCloth/base",
             default_prompt="Fetch and hang the cloth.",
             use_delta_joint_actions=False,
@@ -1218,19 +1253,18 @@ _CONFIGS = [
         num_workers=8,
         batch_size=256,
     ),
-
-    #************************Advantage Estimator***************************
+    # ************************Advantage Estimator***************************
     TrainConfig(
         name="STACK_BLOCKS_ADVANTAGE",
         advantage_estimator=True,
         model=pi0_config.AdvantageEstimatorConfig(
             pi05=True,
-            loss_value_weight=1.,
-            loss_action_weight=0.,  
+            loss_value_weight=1.0,
+            loss_action_weight=0.0,
             discrete_state_input=False,
         ),
         data=LerobotAgilexDataConfig(
-            repo_id = "/mnt/pfs/zhangjiyao/yiming/kai0/data_forsa/data_02",
+            repo_id="/mnt/pfs/zhangjiyao/yiming/kai0/data_forsa/data_02",
             assets=AssetsConfig(
                 assets_dir="",
                 asset_id="StackBlocks",
@@ -1239,30 +1273,30 @@ _CONFIGS = [
             # * why removing "prompt" here will lead to an error in transforms.py
             repack_transforms=_transforms.Group(
                 inputs=[
-                _transforms.RepackTransform(
-                    {
-                        "images": {
-                            "top_head": "observation.images.top_head",
-                            "hand_left": "observation.images.hand_left",
-                            "hand_right": "observation.images.hand_right",
-                            "his_-100_top_head": "his_-100_observation.images.top_head",
-                            "his_-100_hand_left": "his_-100_observation.images.hand_left",
-                            "his_-100_hand_right": "his_-100_observation.images.hand_right",
-                        },
-                        "state": "observation.state",
-                        "actions": "action",
-                        # "prompt": "prompt",  # ! Not adding this for default prompt.
-                        "episode_length": "episode_length",
-                        "frame_index": "frame_index",
-                        "episode_index": "episode_index",
-                        "progress_gt": "stage_progress_gt",
-                        "stage_progress_gt": "stage_progress_gt",
-                        "progress": "progress",
-                        # "is_suboptimal": "is_suboptimal",
-                    }
-                )
-            ]
-            )
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "top_head": "observation.images.top_head",
+                                "hand_left": "observation.images.hand_left",
+                                "hand_right": "observation.images.hand_right",
+                                "his_-100_top_head": "his_-100_observation.images.top_head",
+                                "his_-100_hand_left": "his_-100_observation.images.hand_left",
+                                "his_-100_hand_right": "his_-100_observation.images.hand_right",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                            # "prompt": "prompt",  # ! Not adding this for default prompt.
+                            "episode_length": "episode_length",
+                            "frame_index": "frame_index",
+                            "episode_index": "episode_index",
+                            "progress_gt": "stage_progress_gt",
+                            "stage_progress_gt": "stage_progress_gt",
+                            "progress": "progress",
+                            # "is_suboptimal": "is_suboptimal",
+                        }
+                    )
+                ]
+            ),
         ),
         pytorch_weight_path="/mnt/pfs/zhangjiyao/yiming/kai0/checkpoints/pi05_base",
         num_train_steps=50_000,
@@ -1272,21 +1306,73 @@ _CONFIGS = [
         num_workers=8,
         # batch_size = 8, # toy example
         # batch_size=128,  # * 4 gpus
-        batch_size=256, # * 8 gpus
-        skip_norm_stats=True,           # *  No norm stats used.
+        batch_size=256,  # * 8 gpus
+        skip_norm_stats=True,  # *  No norm stats used.
+    ),
+    TrainConfig(
+        name="ADVANTAGE_TORCH_KAI0_TOWEL_FOLD",
+        project_name="kai0-stage-advantage",
+        advantage_estimator=True,
+        model=pi0_config.AdvantageEstimatorConfig(
+            pi05=True,
+            loss_value_weight=1.0,
+            loss_action_weight=0.0,
+            discrete_state_input=False,
+        ),
+        data=LerobotUMIDataConfig(
+            repo_id="/mnt/pfs/zhangjiyao/yiming/kai0/data/stage_advantage/zngyim_dataset_linear",
+            assets=AssetsConfig(
+                assets_dir="",
+                asset_id="ZngYiM_dataset_linear",
+            ),
+            default_prompt="fold the towel on the table and put it into the basket",
+            mask_state=True,
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "front": "extra_view_image",
+                                "left_wrist": "image",
+                                "his_-100_front": "his_-100_extra_view_image",
+                                "his_-100_left_wrist": "his_-100_image",
+                            },
+                            "state": "state",
+                            "actions": "actions",
+                            "episode_length": "episode_length",
+                            "frame_index": "frame_index",
+                            "episode_index": "episode_index",
+                            "progress": "progress",
+                        }
+                    )
+                ]
+            ),
+        ),
+        pytorch_weight_path="/mnt/pfs/zhangjiyao/yiming/kai0/checkpoints/pi05_base",
+        num_train_steps=10_000,
+        log_interval=10,
+        # Checkpoints are about 20 GB each; retain only the latest resumable one.
+        keep_period=None,
+        save_interval=5_000,
+        num_workers=8,
+        # Two A100-80GB GPUs: global batch 128 (64/GPU) is the largest tested
+        # power of two; global batch 256 OOMs during backward recomputation.
+        batch_size=64,
+        skip_norm_stats=True,
+        wandb_enabled=True,
     ),
     TrainConfig(
         name="ADVANTAGE_TORCH_PI06_FLATTEN_FOLD",
         advantage_estimator=True,
         model=pi0_config.AdvantageEstimatorConfig(
             pi05=True,
-            loss_value_weight=1.,
-            loss_action_weight=0.,  # No action loss in advantage estimator training
+            loss_value_weight=1.0,
+            loss_action_weight=0.0,  # No action loss in advantage estimator training
             discrete_state_input=False,  # Not using states into prompt like pi05
         ),
         data=LerobotAgilexDataConfig(
             # repo_id = "/cpfs01/shared/filtered_cut_data/short_sleeve/flatten_fold/v9-3/1022_20_590_v9-3_2000_lerobot",
-            repo_id = "Path/to/your/advantage/dataset",
+            repo_id="Path/to/your/advantage/dataset",
             assets=AssetsConfig(
                 assets_dir="Path/to/your/advantage/dataset/assets",
                 asset_id="Your_advantage_dataset_name",
@@ -1295,27 +1381,27 @@ _CONFIGS = [
             # * why removing "prompt" here will lead to an error in transforms.py
             repack_transforms=_transforms.Group(
                 inputs=[
-                _transforms.RepackTransform(
-                    {
-                        "images": {
-                            "top_head": "observation.images.top_head",
-                            "hand_left": "observation.images.hand_left",
-                            "hand_right": "observation.images.hand_right",
-                        },
-                        "state": "observation.state",
-                        "actions": "action",
-                        # "prompt": "prompt",  # No need if default prompt is used.
-                        "episode_length": "episode_length",
-                        "frame_index": "frame_index",
-                        "episode_index": "episode_index",
-                        "progress_gt": "progress_gt",
-                        "stage_progress_gt": "stage_progress_gt",
-                        "progress": "progress",
-                        # "is_suboptimal": "is_suboptimal",
-                    }
-                )
-            ]
-            )
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "top_head": "observation.images.top_head",
+                                "hand_left": "observation.images.hand_left",
+                                "hand_right": "observation.images.hand_right",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                            # "prompt": "prompt",  # No need if default prompt is used.
+                            "episode_length": "episode_length",
+                            "frame_index": "frame_index",
+                            "episode_index": "episode_index",
+                            "progress_gt": "progress_gt",
+                            "stage_progress_gt": "stage_progress_gt",
+                            "progress": "progress",
+                            # "is_suboptimal": "is_suboptimal",
+                        }
+                    )
+                ]
+            ),
         ),
         pytorch_weight_path="Path/to/your/pi06_base/checkpoint",
         num_train_steps=100_000,
@@ -1323,16 +1409,15 @@ _CONFIGS = [
         save_interval=10000,
         num_workers=55,
         # batch_size=16,  # * 1 gpus
-        batch_size=18*8, # * 8 gpus
-        skip_norm_stats=True,           # *  No norm stats used.
+        batch_size=18 * 8,  # * 8 gpus
+        skip_norm_stats=True,  # *  No norm stats used.
     ),
-    #************************advantage estimator***************************
-
-    #**************************FlattenFold AWBC*******************************
+    # ************************advantage estimator***************************
+    # **************************FlattenFold AWBC*******************************
     TrainConfig(
         name="pi05_flatten_fold_awbc",
         model=pi0_config.Pi0Config(pi05=True),
-        data = LerobotAgilexDataConfig(
+        data=LerobotAgilexDataConfig(
             repo_id="<path_to_repo_root>/data/FlattenFold/advantage",
             default_prompt="Flatten and fold the cloth.",
             use_delta_joint_actions=False,
@@ -1341,14 +1426,14 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("/cpfs01/shared/checkpoint/pi05_base/params"),
         num_train_steps=100_000,
         keep_period=5000,
-        num_workers=8, 
-        batch_size=256, 
+        num_workers=8,
+        batch_size=256,
     ),
-    #**************************TeeShirtSort AWBC*******************************
+    # **************************TeeShirtSort AWBC*******************************
     TrainConfig(
         name="pi05_tee_shirt_sort_awbc",
         model=pi0_config.Pi0Config(pi05=True),
-        data = LerobotAgilexDataConfig(
+        data=LerobotAgilexDataConfig(
             repo_id="<path_to_repo_root>/data/TeeShirtSort/advantage",
             default_prompt="Fetch the clothes, fold the tee shirts and hand-over the collared shirts.",
             use_delta_joint_actions=False,
@@ -1360,11 +1445,11 @@ _CONFIGS = [
         num_workers=8,
         batch_size=256,
     ),
-    #**************************HangCloth AWBC*******************************
+    # **************************HangCloth AWBC*******************************
     TrainConfig(
         name="pi05_hang_cloth_awbc",
         model=pi0_config.Pi0Config(pi05=True),
-        data = LerobotARXDataConfig(
+        data=LerobotARXDataConfig(
             repo_id="<path_to_repo_root>/data/HangCloth/advantage",
             default_prompt="Fetch and hang the cloth.",
             use_delta_joint_actions=False,
@@ -1373,11 +1458,10 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("/cpfs01/shared/checkpoint/pi05_base/params"),
         num_train_steps=100_000,
         keep_period=5000,
-        num_workers=8, 
-        batch_size=256, 
+        num_workers=8,
+        batch_size=256,
     ),
-
-    #**************************FlattenFold RTC Inference*******************************
+    # **************************FlattenFold RTC Inference*******************************
     # Use this config when serving the policy for agilex_inference_openpi_rtc.py (JAX checkpoints only).
     TrainConfig(
         name="pi05_rtc_flatten_fold_inference",
